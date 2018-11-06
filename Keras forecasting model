@@ -1,0 +1,171 @@
+# -*- coding: utf-8 -*-
+"""
+
+
+
+
+Created on Tue Jul 17 09:58:15 2018
+
+@author: in3553
+
+
+
+in this model, we use a rolling window approach for training and testing. it means, we use a window to pass over the input. and this is the opposite of batch 
+processing. 
+
+
+"""
+
+from __future__ import print_function, division
+import numpy as np
+#import pydot
+import pandas as pd 
+from keras.layers import Convolution1D, Dense, MaxPooling1D, Dropout, Flatten
+from keras.models import Sequential
+#from keras.utils.vis_utils import plot_model
+#import matplotlib.pyplot as plt
+
+__date__ = '2016-07-22'
+
+
+def build_CNN_Model(window_size, filter_length, nb_input_series=1, nb_outputs=1, nb_filter=4):
+    """
+    in this function, we build the model of the convolutional neural network. this model consists of different convolutional layers,
+    each of them is followed with max pooling layer. 
+    The goal of pooling layer is to make a down sampling and reduce the numebr 
+    of parameters in the learning process. 
+    
+    After that, we make flatten layer to prepare the input to the next fully connected layer.
+    
+    The fully connected layer make the actual forecating. 
+    """
+    model = Sequential((
+        # The first conv layer learns `nb_filter` filters (aka kernels), each of size ``(filter_length, nb_input_series)``.
+        # Its output will have shape (None, window_size - filter_length + 1, nb_filter), i.e., for each position in
+        # the input timeseries, the activation of each filter at that position.
+        Convolution1D(nb_filter=nb_filter, filter_length=filter_length, activation='relu', input_shape=(window_size, nb_input_series)),
+        MaxPooling1D(),     # Downsample the output of convolution by 2X.
+        Convolution1D(nb_filter=nb_filter, filter_length=filter_length, activation='relu'),
+        MaxPooling1D(),
+        Convolution1D(nb_filter=nb_filter, filter_length=filter_length, activation='relu'),
+        MaxPooling1D(),
+        Convolution1D(nb_filter=nb_filter, filter_length=filter_length, activation='relu'),
+        MaxPooling1D(),
+        Flatten(),
+       # Dropout(0.5),
+        Dense(nb_outputs, activation='linear'),     # For binary classification, change the activation to 'sigmoid'
+    ))
+    model.compile(loss='mse', optimizer='adam', metrics=['mae'])
+    print(model.summary)
+    # To perform (binary) classification instead:
+    # model.compile(loss='binary_crossentropy', optimizer='adam', metrics=['binary_accuracy'])
+    return model
+
+
+
+
+
+
+def make_timeseries_instances(timeseries, window_size):
+    """Make input features and prediction targets from a `timeseries` for use in machine learning.
+    :return: A tuple of `(X, y, q)`.  `X` are the inputs to a predictor, a 3D ndarray with shape
+      ``(timeseries.shape[0] - window_size, window_size, timeseries.shape[1] or 1)``.  For each row of `X`, the
+      corresponding row of `y` is the next value in the timeseries.  The `q` or query is the last instance, what you would use
+      to predict a hypothetical next (unprovided) value in the `timeseries`.
+    :param ndarray timeseries: Either a simple vector, or a matrix of shape ``(timestep, series_num)``, i.e., time is axis 0 (the
+      row) and the series is axis 1 (the column).
+    :param int window_size: The number of samples to use as input prediction features (also called the lag or lookback).
+    """
+    timeseries = np.asarray(timeseries)
+    assert 0 < window_size < timeseries.shape[0]
+    X = np.atleast_3d(np.array([timeseries[start:start + window_size] for start in range(0, timeseries.shape[0] - window_size)]))
+    y = timeseries[window_size:]
+    return X, y
+
+
+
+
+
+def forecast_timeseries(timeseries, window_size):
+    """Create a 1D CNN regressor to predict the next value in a `timeseries` using the preceding `window_size` elements
+    as input features and evaluate its performance.
+    :param ndarray timeseries: Timeseries data with time increasing down the rows (the leading dimension/axis).
+    :param int window_size: The number of previous timeseries values to use to predict the next.
+    """
+    
+    
+    """
+    the input timeseries has the shape 
+    (1048575,)
+    """
+    
+    filter_length = 3
+    nb_filter = 4
+    timeseries = np.atleast_2d(timeseries)
+    """
+     
+    after converting the timeseries into 2d array :
+    array([[0.878, 0.833, 0.854, ..., 0.683, 0.675, 0.682]])
+    --> it has the shape 
+    (1, 1048575)   
+    """
+    
+    if timeseries.shape[0] == 1:
+        timeseries = timeseries.T       # Convert 1D vectors to 2D column vectors
+
+    nb_samples, nb_series = timeseries.shape
+    print('\n\nTimeseries ({} samples by {} series):\n'.format(nb_samples, nb_series), timeseries)
+    model = build_CNN_Model(window_size=window_size, filter_length=filter_length, nb_input_series=nb_series, nb_outputs=nb_series, nb_filter=nb_filter)
+    print('\n\nModel with input size {}, output size {}, {} conv filters of length {}'.format(model.input_shape, model.output_shape, nb_filter, filter_length))
+    model.summary()
+    X, y = make_timeseries_instances(timeseries, window_size)
+    print('\n\nInput features:', X, '\n\nOutput labels:', y, sep='\n')
+    """
+    here we use 4 years as training set and 1 year for testing set 
+    
+    we need to specify what we want to predict for example: 
+        if we want to predict the next 60 hours --> we feed the network with 60 input hourly time series resolution (each input is a measurmet for an hour)
+    here is this dataset, we have minutly readings, therefore, we can make a prediction for next 60 minutes by feeding 
+    the netwrok with 60 inoput and each input is a minute(we have one-minute time step resolution)... 
+     
+    """
+    test_size = int(0.2 * nb_samples)         # choose the size of testing set
+    X_train, X_test, y_train, y_test = X[:-test_size], X[-test_size:], y[:-test_size], y[-test_size:]
+    model.fit(X_train, y_train, nb_epoch=1, batch_size=2, validation_data=(X_test, y_test))
+    pred = model.predict(X_test)
+    print('\n\nactual', 'predicted', sep='\t')
+    for actual, predicted in zip(y_test, pred.squeeze()):
+        print(actual.squeeze(), predicted, sep='\t')
+
+
+
+
+
+
+
+def main():
+    """Prepare input data, build model, evaluate."""
+    np.set_printoptions(threshold=25)
+   # ts_length = 1000
+    
+    """
+    Window_size indicated the number of time series readings used to predict the next value 
+    for example , for 1 day a head forecasting we need 1440 reading = 1440 minutes 
+        for 1 Month a head forecasting, we need 43200 readings = 43200 minutes
+    """
+    window_size = 50000 # take 1 Month readings to predict the next value 
+    # read tiem series input data 
+    timeseries =pd.read_csv("C:/Users/in3553/Desktop/promotion/practice/python/Building CNN with weather data in tensortflow and keras/Data/Minute_Consumption hause nr 93 in 2013-2017.csv" , header= 0)
+    timeseries = timeseries['use']
+    timeseries = timeseries[1:1000000,]
+    print('\nSimple single timeseries vector prediction')
+   # timeseries = np.arange(ts_length)                   # The timeseries f(t) = t
+    forecast_timeseries(timeseries, window_size)
+    """
+    print('\nMultiple-input, multiple-output prediction')
+    timeseries = np.array([np.arange(ts_length), -np.arange(ts_length)]).T      # The timeseries f(t) = [t, -t]
+    evaluate_timeseries(timeseries, window_size)
+"""
+ 
+if __name__ == '__main__':
+    main()
